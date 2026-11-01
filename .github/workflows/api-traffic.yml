@@ -1,0 +1,48 @@
+name: API traffic (promote / rollback)
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "promote = 100% to the latest revision; rollback = 100% to the revision below"
+        type: choice
+        options: [promote, rollback]
+        required: true
+      revision:
+        description: "Rollback target revision name (leave blank to just list revisions)"
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGION: ${{ vars.GCP_REGION }}
+  SERVICE: ${{ vars.API_SERVICE }}
+  ACTION: ${{ inputs.action }}
+  REVISION: ${{ inputs.revision }}
+
+jobs:
+  traffic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Current revisions
+        run: gcloud run revisions list --service "$SERVICE" --region "$REGION" --limit 10
+
+      - name: Promote latest to 100%
+        if: env.ACTION == 'promote'
+        run: gcloud run services update-traffic "$SERVICE" --region "$REGION" --to-latest --quiet
+
+      - name: Roll back to a previous revision
+        if: env.ACTION == 'rollback' && env.REVISION != ''
+        run: gcloud run services update-traffic "$SERVICE" --region "$REGION" --to-revisions "${REVISION}=100" --quiet
+
+      - name: Traffic now
+        run: gcloud run services describe "$SERVICE" --region "$REGION" --format="yaml(status.traffic)"

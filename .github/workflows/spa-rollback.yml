@@ -1,0 +1,43 @@
+name: SPA rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Release ID to activate (7-char SHA). Leave blank to list releases."
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  BUCKET: ${{ vars.SPA_BUCKET }}
+  URL_MAP: ${{ vars.URL_MAP }}
+  RELEASE: ${{ inputs.release }}
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: List releases
+        run: |
+          echo "Active: $(gcloud storage cat "gs://${BUCKET}/releases/ACTIVE" 2>/dev/null || echo none)"
+          gcloud storage ls "gs://${BUCKET}/releases/"
+
+      - name: Activate the chosen release
+        if: env.RELEASE != ''
+        run: |
+          gcloud storage cp "gs://${BUCKET}/releases/${RELEASE}/index.html" "gs://${BUCKET}/index.html" \
+            --cache-control='no-cache, max-age=0'
+          echo "$RELEASE" | gcloud storage cp - "gs://${BUCKET}/releases/ACTIVE"
+          gcloud compute url-maps invalidate-cdn-cache "$URL_MAP" --path "/index.html" --global --async
+          gcloud compute url-maps invalidate-cdn-cache "$URL_MAP" --path "/" --global --async
+          echo "Rolled back to ${RELEASE}."

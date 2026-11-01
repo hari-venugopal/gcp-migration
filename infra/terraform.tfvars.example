@@ -1,0 +1,5 @@
+project_id  = "your-gcp-project-id"
+github_repo = "your-github-user/amaze-gcp-lab"
+# region            = "us-central1"
+# api_min_instances = 1      # practise pre-scaling (costs more)
+# db_high_availability = true # zonal standby (roughly doubles DB cost)

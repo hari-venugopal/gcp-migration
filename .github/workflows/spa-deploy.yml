@@ -1,0 +1,70 @@
+name: SPA deploy
+
+on:
+  push:
+    branches: [main]
+    paths: ["spa/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  BUCKET: ${{ vars.SPA_BUCKET }}
+  URL_MAP: ${{ vars.URL_MAP }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build (stamp the release ID into the app)
+        working-directory: spa
+        run: |
+          RELEASE="${GITHUB_SHA::7}"
+          echo "RELEASE=$RELEASE" >> "$GITHUB_ENV"
+          sed -i "s/'local'/'${RELEASE}'/" src/app/build-info.ts
+          npm install --no-audit --no-fund
+          npx ng build --configuration production
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # 1. Hashed bundles: immutable, cached for a year, never deleted (old releases still need them).
+      - name: Upload hashed bundles
+        run: |
+          gcloud storage rsync spa/dist/spa/browser "gs://${BUCKET}" \
+            --recursive \
+            --exclude='^index\.html$' \
+            --cache-control='public, max-age=31536000, immutable'
+
+      # 2. Stage this release's entry point (the "inactive" copy).
+      - name: Stage release
+        run: |
+          gcloud storage cp spa/dist/spa/browser/index.html \
+            "gs://${BUCKET}/releases/${RELEASE}/index.html" \
+            --cache-control='no-cache, max-age=0'
+
+      # 3. Activate: point / at this release (the "swap").
+      - name: Activate release
+        run: |
+          gcloud storage cp "gs://${BUCKET}/releases/${RELEASE}/index.html" "gs://${BUCKET}/index.html" \
+            --cache-control='no-cache, max-age=0'
+          echo "$RELEASE" | gcloud storage cp - "gs://${BUCKET}/releases/ACTIVE"
+
+      # 4. Purge the entry point from the CDN (the lab's version of an edge cache purge).
+      - name: Purge CDN
+        run: |
+          gcloud compute url-maps invalidate-cdn-cache "$URL_MAP" --path "/index.html" --global --async
+          gcloud compute url-maps invalidate-cdn-cache "$URL_MAP" --path "/" --global --async
+          echo "Release ${RELEASE} is active."
